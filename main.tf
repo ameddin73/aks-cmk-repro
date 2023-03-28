@@ -39,7 +39,7 @@ resource "azurerm_resource_group" "rg" {
   location = "westus2"
 }
 
-resource "azurerm_key_vault" "eos_cluster_cmk" {
+resource "azurerm_key_vault" "repro_cluster_cmk" {
   name                       = "${var.prefix}-cmk-etcd"
   location                   = "westus2"
   resource_group_name        = azurerm_resource_group.rg.name
@@ -51,14 +51,14 @@ resource "azurerm_key_vault" "eos_cluster_cmk" {
 }
 
 resource "azurerm_role_assignment" "cmk_owner_role" {
-  scope                = azurerm_key_vault.eos_cluster_cmk.id
+  scope                = azurerm_key_vault.repro_cluster_cmk.id
   role_definition_name = "Key Vault Administrator"
   principal_id         = var.cluster_admins
 }
 
-resource "azurerm_key_vault_key" "eos_cluster_etcd" {
+resource "azurerm_key_vault_key" "repro_cluster_etcd" {
   name         = "${var.prefix}-cmk-etcd"
-  key_vault_id = azurerm_key_vault.eos_cluster_cmk.id
+  key_vault_id = azurerm_key_vault.repro_cluster_cmk.id
   key_type     = "EC"
   key_size     = 4096
   key_opts = [
@@ -73,15 +73,35 @@ resource "azurerm_user_assigned_identity" "cluster_identity" {
   name                = "${var.prefix}-cmk-etcd-cluster"
 }
 
+resource "azurerm_user_assigned_identity" "kubelet_identity" {
+  location            = "westus2"
+  resource_group_name = azurerm_resource_group.rg.name
+  name                = "${var.prefix}-cmk-etcd-kubelet"
+}
+
+resource "azurerm_role_assignment" "kubelet_operator_role" {
+  scope                            = azurerm_user_assigned_identity.kubelet_identity.id
+  role_definition_name             = "Managed Identity Operator"
+  principal_id                     = azurerm_user_assigned_identity.cluster_identity.principal_id
+  skip_service_principal_aad_check = true
+}
+
 resource "azurerm_role_assignment" "cmk_crypto_role" {
-  scope                            = azurerm_key_vault.eos_cluster_cmk.id
+  scope                            = azurerm_key_vault.repro_cluster_cmk.id
   role_definition_name             = "Key Vault Crypto User"
   principal_id                     = azurerm_user_assigned_identity.cluster_identity.principal_id
   skip_service_principal_aad_check = true
 }
 
+resource "azurerm_role_assignment" "kubelet_crypto_role" {
+  scope                            = azurerm_key_vault.repro_cluster_cmk.id
+  role_definition_name             = "Key Vault Crypto User"
+  principal_id                     = azurerm_user_assigned_identity.kubelet_identity.principal_id
+  skip_service_principal_aad_check = true
+}
+
 resource "azurerm_role_assignment" "user_crypto_role" {
-  scope                            = azurerm_key_vault.eos_cluster_cmk.id
+  scope                            = azurerm_key_vault.repro_cluster_cmk.id
   role_definition_name             = "Key Vault Crypto User"
   principal_id                     = data.azurerm_client_config.current.client_id
   skip_service_principal_aad_check = true
@@ -92,6 +112,14 @@ resource "azurerm_role_assignment" "cmk_secrets_role" {
   scope                            = azurerm_resource_group.rg.id
   role_definition_name             = "Key Vault Secrets User"
   principal_id                     = azurerm_user_assigned_identity.cluster_identity.principal_id
+  skip_service_principal_aad_check = true
+}
+
+# NOTE: Azure suggested fix: add secrets user assignment
+resource "azurerm_role_assignment" "kubelet_secrets_role" {
+  scope                            = azurerm_resource_group.rg.id
+  role_definition_name             = "Key Vault Secrets User"
+  principal_id                     = azurerm_user_assigned_identity.kubelet_identity.principal_id
   skip_service_principal_aad_check = true
 }
 
@@ -110,9 +138,12 @@ resource "time_sleep" "cmk_role_assignment" {
     azurerm_role_assignment.cmk_owner_role,
     azurerm_role_assignment.cmk_secrets_role,
     azurerm_role_assignment.user_crypto_role,
-    azurerm_role_assignment.user_secrets_role
+    azurerm_role_assignment.user_secrets_role,
+    azurerm_role_assignment.kubelet_operator_role,
+    azurerm_role_assignment.kubelet_secrets_role,
+    azurerm_role_assignment.kubelet_crypto_role,
   ]
-  create_duration = "120s"
+  create_duration = "300s"
 }
 
 resource "azurerm_kubernetes_cluster" "k8s" {
@@ -135,12 +166,18 @@ resource "azurerm_kubernetes_cluster" "k8s" {
     identity_ids = [azurerm_user_assigned_identity.cluster_identity.id]
   }
 
+  kubelet_identity {
+    client_id                 = azurerm_user_assigned_identity.kubelet_identity.client_id
+    object_id                 = azurerm_user_assigned_identity.kubelet_identity.id
+    user_assigned_identity_id = azurerm_user_assigned_identity.kubelet_identity.id
+  }
+
   azure_active_directory_role_based_access_control {
     managed                = true
     admin_group_object_ids = [var.cluster_admins]
   }
 
   key_management_service {
-    key_vault_key_id = azurerm_key_vault_key.eos_cluster_etcd.id
+    key_vault_key_id = azurerm_key_vault_key.repro_cluster_etcd.id
   }
 }
