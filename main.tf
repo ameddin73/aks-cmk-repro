@@ -29,6 +29,11 @@ variable "cluster_admins" {
   type        = string
 }
 
+data "azurerm_client_config" "current" {
+}
+data "azurerm_subscription" "current" {
+}
+
 resource "azurerm_resource_group" "rg" {
   name     = "${var.prefix}-cmk-etcd-rg"
   location = "westus2"
@@ -75,9 +80,38 @@ resource "azurerm_role_assignment" "cmk_crypto_role" {
   skip_service_principal_aad_check = true
 }
 
+resource "azurerm_role_assignment" "user_crypto_role" {
+  scope                            = azurerm_key_vault.eos_cluster_cmk.id
+  role_definition_name             = "Key Vault Crypto User"
+  principal_id                     = data.azurerm_client_config.current.client_id
+  skip_service_principal_aad_check = true
+}
+
+# NOTE: Azure suggested fix: add secrets user assignment
+resource "azurerm_role_assignment" "cmk_secrets_role" {
+  scope                            = azurerm_resource_group.rg.id
+  role_definition_name             = "Key Vault Secrets User"
+  principal_id                     = azurerm_user_assigned_identity.cluster_identity.principal_id
+  skip_service_principal_aad_check = true
+}
+
+# NOTE: Azure suggested fix: add secrets user assignment
+resource "azurerm_role_assignment" "user_secrets_role" {
+  scope                            = data.azurerm_subscription.current.id
+  role_definition_name             = "Key Vault Secrets User"
+  principal_id                     = data.azurerm_client_config.current.client_id
+  skip_service_principal_aad_check = true
+}
+
 # Gurantee the role assignment is complete before building the cluster
 resource "time_sleep" "cmk_role_assignment" {
-  depends_on      = [azurerm_role_assignment.cmk_crypto_role, azurerm_role_assignment.cmk_owner_role]
+  depends_on = [
+    azurerm_role_assignment.cmk_crypto_role,
+    azurerm_role_assignment.cmk_owner_role,
+    azurerm_role_assignment.cmk_secrets_role,
+    azurerm_role_assignment.user_crypto_role,
+    azurerm_role_assignment.user_secrets_role
+  ]
   create_duration = "120s"
 }
 
