@@ -30,8 +30,6 @@ This repository acts as a reproduction of the bug in the form of a Terraform Azu
     # Fill in fields with your details
     {
       "prefix": "",
-      "cluster_admins": "",
-      "tenant_id": ""
     {
     ```
 
